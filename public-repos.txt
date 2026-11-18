@@ -1,0 +1,4 @@
+# Public Maven repositories, one base URL per line.
+# An artifact served by none of them is not an open-source library.
+https://repo1.maven.org/maven2
+https://build.shibboleth.net/maven/releases

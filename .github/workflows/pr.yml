@@ -1,0 +1,89 @@
+# Test the scripts, check the lists, scan the PR's commits for secrets and
+# lint the workflows. Make "PR / done" a required check on main.
+name: PR
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Unit tests
+        run: python3 -m unittest discover -s tests -v
+      - name: Lists are well formed, public, sorted
+        run: python3 scripts/check_lists.py
+      # Every library in the lists is served by a public registry. This is how
+      # an internal artifact is caught without naming internal groups in the
+      # repo.
+      - name: Lists hold only published libraries
+        run: python3 scripts/check_public.py
+
+  # Only the PR's commits, so an old, already-rotated secret does not fail
+  # every PR. The CLI rather than gitleaks-action, which needs a license for
+  # organisation repositories.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install gitleaks
+        env:
+          VERSION: 8.30.1
+          SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v$VERSION/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "$SHA256  /tmp/gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+      - name: Scan the PR's commits
+        run: /tmp/gitleaks git --log-opts="origin/${GITHUB_BASE_REF}..HEAD" --redact --verbose .
+
+  # Pinned tools, so a lint change comes from a PR, not from a release.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          curl -fsSL -o /tmp/actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v$VERSION/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  /tmp/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/actionlint.tar.gz -C /tmp actionlint
+          /tmp/actionlint -color
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pipx run zizmor==1.32.0 --min-severity medium .github/workflows
+
+  done:
+    needs: [test, secrets, lint]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TEST_RESULT: ${{ needs.test.result }}
+          SECRETS_RESULT: ${{ needs.secrets.result }}
+          LINT_RESULT: ${{ needs.lint.result }}
+        run: '[[ "$TEST_RESULT" == success && "$SECRETS_RESULT" == success && "$LINT_RESULT" == success ]]'

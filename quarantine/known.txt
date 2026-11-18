@@ -1,0 +1,1 @@
+pkg:maven/org.xerial.snappy/snappy-java@1.1.10.9

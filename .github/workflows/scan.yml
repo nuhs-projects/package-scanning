@@ -1,0 +1,106 @@
+# Every working day: scan the library lists against OSV and keep one open
+# issue, "Package update request", with the consolidated list of versions to
+# request. It is edited in place, gets a comment only when a package is new,
+# and is closed when nothing is left to request.
+name: Scan
+
+on:
+  schedule:
+    - cron: "0 0 * * 1-5"   # 00:00 UTC, Monday to Friday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scan-issue
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read   # to download the previous run's report
+      contents: read  # to check out the catalogue
+      issues: write   # to open, update and close the issue
+    steps:
+      - name: Require the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: '[[ "$GITHUB_REF" == "refs/heads/$DEFAULT_BRANCH" ]]'
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The report is diffed against the last successful run. The first run,
+      # or an expired artifact, simply has no previous report.
+      - name: Download the previous report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          id=$(gh run list --workflow scan.yml --branch "$DEFAULT_BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [[ -n "$id" ]]; then
+            artifact=$(gh api "repos/$GH_REPO/actions/runs/$id/artifacts" --jq '[.artifacts[] | select(.name == "report" and .expired == false)] | .[0].id // empty')
+            if [[ -n "$artifact" ]]; then
+              gh run download "$id" -n report -D prev
+              test -f prev/report.json
+            fi
+          fi
+
+      - name: Scan
+        run: |
+          args=()
+          if [[ -f prev/report.json ]]; then
+            args+=(--previous prev/report.json)
+          fi
+          python3 scripts/scan.py --out reports "${args[@]}"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report
+          path: reports/
+          retention-days: 90
+
+      - name: Open, update or close the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+
+          # List open issues directly so a new issue is visible without waiting
+          # for GitHub to index it in search.
+          export TITLE="Package update request"
+          number=$(gh api --paginate "repos/$GH_REPO/issues?state=open&per_page=100" \
+            | jq -sr '[.[][] | select(.pull_request == null and .title == env.TITLE)] | .[0].number // empty')
+
+          findings=$(jq '.counts.findings' reports/report.json)
+          new=$(jq '.counts.new' reports/report.json)
+
+          # Advisories with no fix yet cannot be requested: they are listed in
+          # the issue while it is open, but do not keep it open on their own.
+          if [[ "$findings" == 0 ]]; then
+            if [[ -n "$number" ]]; then
+              gh issue close "$number" --comment "Nothing left to request: $run_url"
+            fi
+            exit 0
+          fi
+
+          { cat reports/report.md; printf '\n---\n%s\n' "$run_url"; } > body.md
+
+          if [[ -n "$number" ]]; then
+            gh issue edit "$number" --body-file body.md
+            if [[ "$new" != 0 ]]; then
+              jq -r '.findings[] | select(.status == "new") | "- `\(.package)` \(.in_use | join(", ")) -> \(.request)"' \
+                reports/report.json > new.txt
+              { printf 'New since the last run:\n\n'; cat new.txt; printf '\n%s\n' "$run_url"; } > comment.md
+              gh issue comment "$number" --body-file comment.md
+            fi
+          else
+            gh issue create --title "$TITLE" --body-file body.md
+          fi

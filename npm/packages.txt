@@ -1,0 +1,17 @@
+@playwright/test@1.63.0
+pg-cloudflare@1.4.0
+pg-connection-string@2.14.0
+pg-int8@1.0.1
+pg-pool@3.14.0
+pg-protocol@1.16.0
+pg-types@2.2.0
+pg@8.16.3
+pgpass@1.0.5
+playwright-core@1.63.0
+playwright@1.63.0
+postgres-array@2.0.0
+postgres-bytea@1.0.1
+postgres-date@1.0.7
+postgres-interval@1.2.0
+split2@4.2.0
+xtend@4.0.2

@@ -1,0 +1,7 @@
+# Local working notes and scan output: never public
+*-plan.md
+*-execution.md
+evidence/
+reports/
+sources.local
+__pycache__/
