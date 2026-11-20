@@ -1,7 +1,8 @@
 # Every working day: scan the library lists against OSV and keep one open
 # issue, "Package update request", with the consolidated list of versions to
 # request. It is edited in place, gets a comment only when a package is new,
-# and is closed when nothing is left to request.
+# and is closed when nothing is left to request. The run fails while any
+# library has a known vulnerability.
 name: Scan
 
 on:
@@ -33,8 +34,10 @@ jobs:
         with:
           persist-credentials: false
 
-      # The report is diffed against the last successful run. The first run,
-      # or an expired artifact, simply has no previous report.
+      # The report is diffed against the latest completed run that uploaded
+      # one. Runs fail while vulnerabilities exist, so "success" alone would
+      # mark every finding new each day. The first run, or expired artifacts,
+      # simply have no previous report.
       - name: Download the previous report
         env:
           GH_TOKEN: ${{ github.token }}
@@ -42,14 +45,15 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          id=$(gh run list --workflow scan.yml --branch "$DEFAULT_BRANCH" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
-          if [[ -n "$id" ]]; then
+          ids=$(gh run list --workflow scan.yml --branch "$DEFAULT_BRANCH" --status completed --limit 20 --json databaseId --jq '.[].databaseId')
+          for id in $ids; do
             artifact=$(gh api "repos/$GH_REPO/actions/runs/$id/artifacts" --jq '[.artifacts[] | select(.name == "report" and .expired == false)] | .[0].id // empty')
             if [[ -n "$artifact" ]]; then
               gh run download "$id" -n report -D prev
               test -f prev/report.json
+              break
             fi
-          fi
+          done
 
       - name: Scan
         run: |
@@ -103,4 +107,16 @@ jobs:
             fi
           else
             gh issue create --title "$TITLE" --body-file body.md
+          fi
+
+      # Last, so the report and the issue are always up to date: the run fails
+      # while any library in use has a known vulnerability, fixable or not.
+      - name: Fail on vulnerabilities
+        run: |
+          set -euo pipefail
+          findings=$(jq '.counts.findings' reports/report.json)
+          no_fix=$(jq '.counts.no_fix' reports/report.json)
+          if (( findings + no_fix > 0 )); then
+            echo "::error::$findings package(s) to request, $no_fix with no fix yet; see the report artifact and the issue"
+            exit 1
           fi
