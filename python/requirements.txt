@@ -19,7 +19,7 @@ packaging==26.3
 pandas==3.0.3
 pandas==3.0.5
 pluggy==1.6.0
-propcache==0.5.2
+propcache==0.5.4
 psycopg2-binary==2.9.13
 pygments==2.21.0
 pytest==9.1.1
