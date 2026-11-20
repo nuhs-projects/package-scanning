@@ -74,10 +74,11 @@ Per library, not per advisory:
 
 ## The issue
 
-`scan.yml` runs at 00:00 UTC, Monday to Friday, and on demand on the default branch. Runs are serialized while updating the issue. It downloads the previous successful default-branch `report` artifact, scans, and uploads the new report (90 days). The first run or an expired artifact starts without a previous report; a download failure fails the run.
+`scan.yml` runs at 00:00 UTC, Monday to Friday, and on demand on the default branch. Runs are serialized while updating the issue. It downloads the `report` artifact of the latest completed default-branch run that has one (among the last 20), scans, and uploads the new report (90 days). The first run or expired artifacts start without a previous report; a download failure fails the run.
 
 - Nothing to request: the open issue is closed. "No fix yet" advisories are shown while it is open, but do not keep it open on their own.
 - Otherwise the issue body is replaced with the current report, or the issue is created.
 - A short comment listing the packages is added only when something is new and the issue already exists.
+- The run fails, after the issue is updated, while any library has a known vulnerability, including those with no fix yet. A green run means no known vulnerabilities.
 
 `pr.yml` runs the tests, the list check, gitleaks, actionlint and zizmor. Make `PR / done` a required check on `main`.
