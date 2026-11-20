@@ -9,7 +9,7 @@ frozenlist==1.8.0
 greenlet==3.5.5
 hl7==0.4.5
 idna==3.20
-iniconfig==2.3.0
+iniconfig==2.3.1
 joblib==1.6.0
 multidict==6.9.1
 narwhals==2.26.0
