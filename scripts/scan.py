@@ -1,7 +1,7 @@
 """Scan the library lists against OSV and write one consolidated report.
 
     python3 scripts/scan.py [--previous PREV_report.json] [--out DIR]
-                            [--root DIR] [--offline-vulns DIR]
+                            [--root DIR] [--offline-vulns DIR] [--snyk DIR]
 
 Reads python/requirements.txt, java/dependencies.txt and npm/packages.txt
 under --root (default: the repo root), asks OSV (POST /v1/querybatch, then
@@ -16,6 +16,27 @@ status is 0 even when findings exist; the workflow decides what to do.
              network (tests, debugging). querybatch.json is either the OSV
              response ({"results": [...]}, one entry per query in list order:
              python, java, npm) or a {purl: [ids]} map.
+--snyk DIR   Also merge Snyk results: every DIR/*.json is the output of
+             `snyk test --json-file-output` for one manifest (an object, or a
+             list of objects). A missing or empty DIR, an error object
+             (no `vulnerabilities`) or malformed data fails the scan.
+
+Snyk (optional, next to OSV):
+
+* Each Snyk vulnerability becomes an OSV-shaped record (id = Snyk id,
+  aliases = CVE + GHSA ids, summary = title, CVSSv3 vector, severity label,
+  affected package with ranges parsed from `semver.vulnerable` plus the
+  tested version in `versions`), so alias grouping, fix selection and
+  severity work unchanged. An OSV record with the same id wins.
+* Only vulnerabilities of a library (ecosystem, name, version) that is in the
+  lists are kept; transitive dependencies are dropped. The same Snyk id found
+  in several manifests is merged into one record.
+* Ranges: Maven/pip interval notation ([a,b), [a,b], [a]), operator style
+  (>=a <b, <b, <=b, with || alternatives, used by npm and pip). If a range
+  cannot be parsed, the tested version is affected and the fix is the lowest
+  `fixedIn` above it.
+* report.json gets "sources" (["OSV"] or ["OSV", "Snyk"]); report.md names
+  them in its header.
 
 Consolidation, per package (not per CVE):
 
@@ -591,9 +612,10 @@ def diff(findings, previous, no_fix=()):
             for (e, p) in sorted(prev) if (e, p) not in now]
 
 
-def build_report(findings, no_fix, resolved, generated=None):
+def build_report(findings, no_fix, resolved, generated=None, sources=("OSV",)):
     return {
         "generated": generated or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sources": list(sources),
         "findings": findings, "no_fix": no_fix, "resolved": resolved,
         "counts": {"findings": len(findings),
                    "new": sum(f["status"] == "new" for f in findings),
@@ -609,8 +631,15 @@ def request_line(eco, package, version):
     return f"{package}@{version}" if eco == "npm" else f"{package}:{version}"
 
 
+def advisory_label(i):
+    """Snyk-only ids have no CVE/GHSA to search for: link the Snyk page."""
+    if i.startswith("SNYK-"):
+        return f"[{i}](https://security.snyk.io/vuln/{i})"
+    return i
+
+
 def advisories_cell(adv, limit=3):
-    shown = ", ".join(adv[:limit])
+    shown = ", ".join(advisory_label(i) for i in adv[:limit])
     return shown + (f" +{len(adv) - limit}" if len(adv) > limit else "")
 
 
@@ -619,7 +648,8 @@ def render_md(report, adv_limit=3, drop=0, extra=None):
     in the request list). extra: max items in the no-fix/resolved lists."""
     c = report["counts"]
     out = ["# Package update request", "",
-           f"Generated {report['generated']}. {c['findings']} package(s) to "
+           f"Generated {report['generated']} from "
+           f"{' + '.join(report.get('sources', ['OSV']))}. {c['findings']} package(s) to "
            f"request ({c['new']} new), {c['no_fix']} with no fix yet, "
            f"{c['resolved']} resolved since last run.", ""]
     findings = report["findings"]
@@ -825,12 +855,191 @@ def spring_boot_version(entries):
     return vmax("Maven", versions) if versions else None
 
 
-def scan(entries, offline=None):
+# --- Snyk ------------------------------------------------------------------
+
+SNYK_ECOSYSTEMS = {"maven": "Maven", "pip": "PyPI", "poetry": "PyPI",
+                   "npm": "npm", "yarn": "npm"}
+SNYK_INTERVAL = re.compile(r"[\[(][^\[\]()]*[\])]")
+SNYK_OPERATOR = re.compile(r"^(>=|<=|>|<|=)?\s*([^\s<>=,*]+)$")
+
+
+def _snyk_alternatives(spec):
+    """Split semver.vulnerable (string or list) into alternatives."""
+    items = spec if isinstance(spec, list) else [spec]
+    out = []
+    for item in items:
+        if not isinstance(item, str):
+            raise ValueError("unparseable")
+        text = item.strip()
+        if text[:1] in "[(":
+            found = SNYK_INTERVAL.findall(text)
+            if not found or re.sub(r"[\s,]", "", SNYK_INTERVAL.sub("", text)):
+                raise ValueError("unparseable")
+            out += found
+        else:
+            out += [a for a in (x.strip() for x in text.split("||")) if a]
+    if not out:
+        raise ValueError("unparseable")
+    return out
+
+
+def _snyk_alternative_events(alt):
+    """(events, exact version or None) for one alternative."""
+    if alt[0] in "[(":
+        body = alt[1:-1]
+        if "," not in body:
+            if alt[0] != "[" or alt[-1] != "]" or not body.strip():
+                raise ValueError("unparseable")
+            return None, body.strip()
+        lo, hi = (x.strip() for x in body.split(",", 1))
+        # An exclusive lower bound "(a," is treated as introduced a (slightly
+        # wider than Snyk; the tested version is listed in `versions` anyway).
+        events = [{"introduced": lo or "0"}]
+        if hi:
+            events.append({"fixed": hi} if alt[-1] == ")" else {"last_affected": hi})
+        return events, None
+    lo, hi, exact = None, None, None
+    for token in alt.replace(",", " ").split():
+        m = SNYK_OPERATOR.match(token)
+        if not m:
+            raise ValueError("unparseable")
+        op, ver = m.groups()
+        if not ver[0].isdigit() or re.search(r"(^|\.)[xX]$", ver):
+            raise ValueError("unparseable")
+        if op in (None, "="):
+            if exact is not None:
+                raise ValueError("unparseable")
+            exact = ver
+        elif op in (">=", ">"):  # ">a" is treated as introduced a
+            lo = ver
+        else:
+            hi = (ver, "fixed" if op == "<" else "last_affected")
+    if exact is not None and (lo or hi):
+        raise ValueError("unparseable")
+    if exact is not None:
+        return None, exact
+    if lo is None and hi is None:
+        raise ValueError("unparseable")
+    events = [{"introduced": lo or "0"}]
+    if hi:
+        events.append({hi[1]: hi[0]})
+    return events, None
+
+
+def snyk_ranges(eco, spec, version, fixed_in=()):
+    """(ranges, versions) in OSV shape for one Snyk vulnerability."""
+    versions = [version]
+    try:
+        ranges = []
+        for alt in _snyk_alternatives(spec):
+            events, exact = _snyk_alternative_events(alt)
+            if exact:
+                versions.append(exact)
+            else:
+                ranges.append({"type": "ECOSYSTEM", "events": events})
+        return ranges, list(dict.fromkeys(versions))
+    except ValueError:
+        above = [v for v in fixed_in if isinstance(v, str)
+                 and compare(eco, v, version) > 0]
+        events = [{"introduced": version}]
+        if above:
+            events.append({"fixed": sort_versions(eco, above)[0]})
+        return [{"type": "ECOSYSTEM", "events": events}], versions
+
+
+def snyk_record(v, eco):
+    """OSV-shaped record for one Snyk vulnerability."""
+    ids = v.get("identifiers") or {}
+    aliases = [a for k in ("CVE", "GHSA") for a in (ids.get(k) or [])
+               if isinstance(a, str)]
+    semver = v.get("semver") or {}
+    fixed_in = v.get("fixedIn") or []
+    ranges, versions = snyk_ranges(eco, semver.get("vulnerable"), v["version"],
+                                   fixed_in if isinstance(fixed_in, list) else [])
+    rec = {"id": v["id"], "aliases": list(dict.fromkeys(aliases)),
+           "summary": v.get("title", ""),
+           "affected": [{"package": {"ecosystem": eco, "name": v["packageName"]},
+                         "ranges": ranges, "versions": versions}]}
+    if isinstance(v.get("CVSSv3"), str) and v["CVSSv3"]:
+        rec["severity"] = [{"type": "CVSS_V3", "score": v["CVSSv3"]}]
+    if isinstance(v.get("severity"), str):
+        rec["database_specific"] = {"severity": v["severity"].upper()}
+    return rec
+
+
+def _merge_snyk(into, rec):
+    for aff in rec["affected"]:
+        key = (aff["package"]["ecosystem"], norm_name(aff["package"]["ecosystem"],
+                                                       aff["package"]["name"]))
+        for old in into["affected"]:
+            p = old["package"]
+            if (p["ecosystem"], norm_name(p["ecosystem"], p["name"])) == key:
+                for r in aff["ranges"]:
+                    if r not in old["ranges"]:
+                        old["ranges"].append(r)
+                old["versions"] = list(dict.fromkeys(old["versions"] + aff["versions"]))
+                break
+        else:
+            into["affected"].append(aff)
+    into["aliases"] = list(dict.fromkeys(into["aliases"] + rec["aliases"]))
+
+
+def load_snyk(directory, entries):
+    """(hits, vulns) from DIR/*.json, restricted to (and keyed by) the list
+    entries. Raises on a missing/empty directory, error output or bad data."""
+    if not os.path.isdir(directory):
+        raise FileNotFoundError(f"Snyk directory not found: {directory}")
+    files = sorted(n for n in os.listdir(directory) if n.endswith(".json"))
+    if not files:
+        raise ValueError(f"no Snyk results (*.json) in {directory}")
+    index = {(e, norm_name(e, n), v): (e, n, v) for e, n, v in entries}
+    hits, vulns = {}, {}
+    for fname in files:
+        with open(os.path.join(directory, fname)) as f:
+            try:
+                data = json.load(f)
+            except ValueError as err:
+                raise ValueError(f"{fname}: not valid JSON: {err}") from None
+        for doc in data if isinstance(data, list) else [data]:
+            if not isinstance(doc, dict) or not isinstance(doc.get("vulnerabilities"), list):
+                msg = doc.get("error") if isinstance(doc, dict) else None
+                raise ValueError(f"{fname}: Snyk error or malformed output"
+                                 + (f": {msg}" if isinstance(msg, str) else ""))
+            top = doc.get("packageManager")
+            for v in doc["vulnerabilities"]:
+                if (not isinstance(v, dict) or not isinstance(v.get("id"), str)
+                        or not isinstance(v.get("packageName"), str)
+                        or not isinstance(v.get("version"), str)):
+                    raise ValueError(f"{fname}: malformed Snyk vulnerability")
+                pm = v.get("packageManager") or top
+                eco = SNYK_ECOSYSTEMS.get(pm) if isinstance(pm, str) else None
+                if not eco:
+                    raise ValueError(f"{fname}: unknown Snyk packageManager {pm!r}")
+                entry = index.get((eco, norm_name(eco, v["packageName"]), v["version"]))
+                if entry is None:
+                    continue  # transitive dependency
+                rec = snyk_record(v, eco)
+                if rec["id"] in vulns:
+                    _merge_snyk(vulns[rec["id"]], rec)
+                else:
+                    vulns[rec["id"]] = rec
+                if rec["id"] not in hits.setdefault(entry, []):
+                    hits[entry].append(rec["id"])
+    return hits, vulns
+
+
+def scan(entries, offline=None, snyk=None):
     purls = {e: purl(*e) for e in entries}
     unique = list(dict.fromkeys(purls.values()))  # list order, deduped
     by_purl = query_offline(unique, offline) if offline else query_online(unique)
     hits = {e: by_purl.get(p, []) for e, p in purls.items()}
     vulns = fetch_vulns({i for ids in hits.values() for i in ids}, offline)
+    if snyk:
+        s_hits, s_vulns = load_snyk(snyk, entries)
+        for vid, rec in s_vulns.items():
+            vulns.setdefault(vid, rec)  # an OSV record with the same id wins
+        for entry, ids in s_hits.items():
+            hits[entry] += [i for i in ids if i not in hits[entry]]
     return consolidate(hits, vulns, spring_boot_version(entries))
 
 
@@ -841,6 +1050,7 @@ def main(argv=None):
     ap.add_argument("--out", help="output directory (default: <root>/reports)")
     ap.add_argument("--root", default=root_default, help="repo root holding the lists")
     ap.add_argument("--offline-vulns", help="read OSV data from this directory")
+    ap.add_argument("--snyk", help="directory of `snyk test --json-file-output` files")
     args = ap.parse_args(argv)
 
     previous = None
@@ -849,9 +1059,10 @@ def main(argv=None):
             previous = json.load(f)
 
     entries = read_lists(args.root)
-    findings, no_fix = scan(entries, args.offline_vulns)
+    findings, no_fix = scan(entries, args.offline_vulns, args.snyk)
     resolved = diff(findings, previous, no_fix)
-    report = build_report(findings, no_fix, resolved)
+    report = build_report(findings, no_fix, resolved,
+                          sources=["OSV", "Snyk"] if args.snyk else ["OSV"])
 
     out = args.out or os.path.join(args.root, "reports")
     os.makedirs(out, exist_ok=True)

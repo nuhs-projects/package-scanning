@@ -5,3 +5,5 @@ evidence/
 reports/
 sources.local
 __pycache__/
+snyk-manifests/
+snyk-results/

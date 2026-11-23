@@ -1,0 +1,41 @@
+{
+  "ok": false,
+  "dependencyCount": 10,
+  "org": "demo-org",
+  "projectName": "catalogue-java-2",
+  "displayTargetFile": "pom.xml",
+  "path": "/work/demo",
+  "packageManager": "maven",
+  "vulnerabilities": [
+    {
+      "id": "SNYK-JAVA-ORGOW2ASM-21715445",
+      "title": "Demo issue in asm",
+      "packageName": "org.ow2.asm:asm",
+      "version": "9.7.1",
+      "severity": "high",
+      "cvssScore": 7.5,
+      "identifiers": {
+        "CVE": [
+          "CVE-2099-0001"
+        ],
+        "GHSA": [],
+        "CWE": [
+          "CWE-400"
+        ]
+      },
+      "semver": {
+        "vulnerable": [
+          "[,9.11)"
+        ]
+      },
+      "fixedIn": [
+        "9.11"
+      ],
+      "from": [
+        "catalogue-java-1@1.0",
+        "org.ow2.asm:asm@9.7.1"
+      ],
+      "CVSSv3": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    }
+  ]
+}

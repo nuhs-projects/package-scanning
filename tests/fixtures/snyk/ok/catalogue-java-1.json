@@ -1,0 +1,97 @@
+{
+  "ok": false,
+  "dependencyCount": 10,
+  "org": "demo-org",
+  "projectName": "catalogue-java-1",
+  "displayTargetFile": "pom.xml",
+  "path": "/work/demo",
+  "packageManager": "maven",
+  "vulnerabilities": [
+    {
+      "id": "SNYK-JAVA-ORGOW2ASM-21715445",
+      "title": "Demo issue in asm",
+      "packageName": "org.ow2.asm:asm",
+      "version": "9.7.1",
+      "severity": "high",
+      "cvssScore": 7.5,
+      "identifiers": {
+        "CVE": [
+          "CVE-2099-0001"
+        ],
+        "GHSA": [],
+        "CWE": [
+          "CWE-400"
+        ]
+      },
+      "semver": {
+        "vulnerable": [
+          "[,9.11)"
+        ]
+      },
+      "fixedIn": [
+        "9.11"
+      ],
+      "from": [
+        "catalogue-java-1@1.0",
+        "org.ow2.asm:asm@9.7.1"
+      ],
+      "CVSSv3": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    },
+    {
+      "id": "SNYK-JAVA-NETMINIDEV-21715438",
+      "title": "Demo issue in json-smart",
+      "packageName": "net.minidev:json-smart",
+      "version": "2.6.0",
+      "severity": "medium",
+      "cvssScore": 7.5,
+      "identifiers": {
+        "CVE": [
+          "CVE-2099-0002"
+        ],
+        "GHSA": [],
+        "CWE": [
+          "CWE-400"
+        ]
+      },
+      "semver": {
+        "vulnerable": [
+          "[2.0.0,2.6.1)"
+        ]
+      },
+      "fixedIn": [
+        "2.6.1"
+      ],
+      "from": [
+        "catalogue-java-1@1.0",
+        "net.minidev:json-smart@2.6.0"
+      ]
+    },
+    {
+      "id": "SNYK-JAVA-COMEXAMPLE-1",
+      "title": "Transitive demo",
+      "packageName": "com.example:transitive",
+      "version": "1.0",
+      "severity": "low",
+      "cvssScore": 7.5,
+      "identifiers": {
+        "CVE": [],
+        "GHSA": [],
+        "CWE": [
+          "CWE-400"
+        ]
+      },
+      "semver": {
+        "vulnerable": [
+          "[,2.0)"
+        ]
+      },
+      "fixedIn": [
+        "2.0"
+      ],
+      "from": [
+        "catalogue-java-1@1.0",
+        "com.example:transitive@1.0"
+      ]
+    }
+  ]
+}
