@@ -22,8 +22,8 @@ com.google.guava:guava:33.7.2-jre
 com.google.guava:listenablefuture:9999.0-empty-to-avoid-conflict-with-guava
 com.google.j2objc:j2objc-annotations:3.1
 com.jayway.jsonpath:json-path:2.10.0
-com.microsoft.sqlserver:mssql-jdbc:13.4.0.jre11
-com.microsoft.sqlserver:mssql-jdbc:13.6.0.jre11
+com.microsoft.sqlserver:mssql-jdbc:13.6.2.jre11
+com.microsoft.sqlserver:mssql-jdbc:13.6.2.jre11
 com.sun.istack:istack-commons-runtime:4.1.2
 com.zaxxer:HikariCP:5.1.0
 com.zaxxer:HikariCP:6.3.3
