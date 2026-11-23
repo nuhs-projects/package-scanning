@@ -1,4 +1,5 @@
-# Every working day: scan the library lists against OSV and keep one open
+# Every working day: scan the library lists against OSV (and Snyk, when the
+# SNYK_TOKEN secret is set) and keep one open
 # issue, "Package update request", with the consolidated list of versions to
 # request. It is edited in place, gets a comment only when a package is new,
 # and is closed when nothing is left to request. The run fails while any
@@ -20,6 +21,10 @@ concurrency:
 jobs:
   scan:
     runs-on: ubuntu-latest
+    env:
+      # Snyk runs only when the secret exists. The token itself is mapped
+      # into the one step that needs it.
+      HAS_SNYK: ${{ secrets.SNYK_TOKEN != '' }}
     permissions:
       actions: read   # to download the previous run's report
       contents: read  # to check out the catalogue
@@ -55,11 +60,57 @@ jobs:
             fi
           done
 
+      - name: Install the Snyk CLI
+        if: env.HAS_SNYK == 'true'
+        env:
+          VERSION: 1.1309.0
+          SHA256: 4802579c2818938a2f4849d270df1139f310104286a8a5c6305328a3c2eb9e1c
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/snyk" \
+            "https://github.com/snyk/cli/releases/download/v$VERSION/snyk-linux"
+          echo "$SHA256  $RUNNER_TEMP/bin/snyk" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/bin/snyk"
+
+      # One `snyk test` per manifest; exit 0 (clean) and 1 (vulnerabilities)
+      # are fine, anything else fails the run so a broken Snyk run never
+      # drops findings. `snyk test` only: nothing is stored in Snyk.
+      - name: Snyk test
+        if: env.HAS_SNYK == 'true'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_DISABLE_ANALYTICS: "1"
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/snyk"
+          out="$RUNNER_TEMP/snyk-results"
+          mkdir -p "$out"
+          python3 scripts/snyk_manifests.py --out "$dir"
+          while IFS=$'\t' read -r name file _ extra; do
+            [[ -n "$name" ]] || continue
+            read -r -a extra_args <<< "${extra:-}"
+            code=0
+            "$RUNNER_TEMP/bin/snyk" test --file="$dir/$file" "${extra_args[@]}" \
+              --json-file-output="$out/$name.json" > /dev/null 2>&1 || code=$?
+            if (( code > 1 )); then
+              echo "::error::snyk test failed for $name (exit $code)"
+              exit 1
+            fi
+            if [[ ! -s "$out/$name.json" ]]; then
+              echo "::error::snyk test wrote no result for $name"
+              exit 1
+            fi
+          done < "$dir/manifests.txt"
+
       - name: Scan
         run: |
           args=()
           if [[ -f prev/report.json ]]; then
             args+=(--previous prev/report.json)
+          fi
+          if compgen -G "$RUNNER_TEMP/snyk-results/*.json" > /dev/null; then
+            args+=(--snyk "$RUNNER_TEMP/snyk-results")
           fi
           python3 scripts/scan.py --out reports "${args[@]}"
 

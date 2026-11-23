@@ -1,0 +1,42 @@
+{
+  "ok": false,
+  "dependencyCount": 10,
+  "org": "demo-org",
+  "projectName": "catalogue-py-1",
+  "displayTargetFile": "manifest",
+  "path": "/work/demo",
+  "packageManager": "poetry",
+  "vulnerabilities": [
+    {
+      "id": "SNYK-PYTHON-DEMOLIB-1",
+      "title": "Demo issue in demo-lib",
+      "packageName": "Demo_Lib",
+      "version": "1.0.0",
+      "severity": "critical",
+      "cvssScore": 7.5,
+      "identifiers": {
+        "CVE": [
+          "CVE-2099-0003"
+        ],
+        "GHSA": [],
+        "CWE": [
+          "CWE-400"
+        ]
+      },
+      "semver": {
+        "vulnerable": [
+          "[,1.2.0)"
+        ]
+      },
+      "fixedIn": [
+        "1.2.0"
+      ],
+      "from": [
+        "catalogue-py-1@0.0.0",
+        "demo-lib@1.0.0"
+      ],
+      "CVSSv3": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "packageManager": "pip"
+    }
+  ]
+}

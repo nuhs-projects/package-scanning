@@ -25,6 +25,8 @@ python3 scripts/check_public.py
 
 Workflows read secrets only from GitHub Actions secrets (`${{ secrets.NAME }}`) and pass GitHub context to scripts through `env:`, never by interpolating it into `run:`. Pin every action by full commit SHA, with the version in a comment.
 
+`SNYK_TOKEN` lives only in GitHub Actions secrets. Raw Snyk JSON output (`snyk-results/`) stays local and is never uploaded as an artifact: it holds account metadata.
+
 Internal Maven group prefixes are not committed. They come from `INTERNAL_GROUPS` in the environment (comma- or space-separated) for `sync.py`; in CI, `check_public.py` catches internal artifacts without any internal names, by asking the public registries whether each listed library is published there.
 
 Before pushing, scan the new commits the same way PR CI does:

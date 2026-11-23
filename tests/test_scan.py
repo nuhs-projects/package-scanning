@@ -348,6 +348,11 @@ class Report(unittest.TestCase):
         resolved = [{"ecosystem": "npm", "package": "gone", "request": "2.0.0"}]
         return scan.build_report(findings, no_fix, resolved, "2026-11-18T00:00:00Z")
 
+    def test_snyk_ids_link_to_snyk(self):
+        cell = scan.advisories_cell(["CVE-1", "SNYK-JAVA-ORGOW2ASM-21715445"])
+        self.assertEqual(cell, "CVE-1, [SNYK-JAVA-ORGOW2ASM-21715445]"
+                         "(https://security.snyk.io/vuln/SNYK-JAVA-ORGOW2ASM-21715445)")
+
     def test_counts(self):
         self.assertEqual(self.sample()["counts"],
                          {"findings": 3, "new": 2, "no_fix": 1, "resolved": 1})
@@ -518,6 +523,238 @@ class Lists(unittest.TestCase):
         self.assertEqual(scan.parse_line("npm", "@playwright/test@1.49.0"),
                          ("@playwright/test", "1.49.0"))
         self.assertEqual(scan.parse_line("npm", "ms@2.1.3"), ("ms", "2.1.3"))
+
+
+SNYK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "snyk")
+ASM = "SNYK-JAVA-ORGOW2ASM-21715445"
+JSMART = "SNYK-JAVA-NETMINIDEV-21715438"
+SNYK_ENTRIES = [("Maven", "org.ow2.asm:asm", "9.7.1"),
+                ("Maven", "net.minidev:json-smart", "2.6.0"),
+                ("PyPI", "demo-lib", "1.0.0"), ("npm", "demo-pkg", "1.0.0")]
+
+
+def events(*rs):
+    return [r["events"] for r in rs]
+
+
+class SnykRanges(unittest.TestCase):
+    def parse(self, eco, spec, version="1.0", fixed_in=()):
+        return scan.snyk_ranges(eco, spec, version, fixed_in)
+
+    def test_table(self):
+        I, F, L = "introduced", "fixed", "last_affected"
+        table = [
+            ("Maven", ["[,9.11)"], [[{I: "0"}, {F: "9.11"}]], ["1.0"]),
+            ("Maven", ["[2.0.0,2.4.11)"], [[{I: "2.0.0"}, {F: "2.4.11"}]], ["1.0"]),
+            ("Maven", "[1.0,1.5]", [[{I: "1.0"}, {L: "1.5"}]], ["1.0"]),
+            ("Maven", "(1.0,2.0)", [[{I: "1.0"}, {F: "2.0"}]], ["1.0"]),
+            ("Maven", "[1.0,)", [[{I: "1.0"}]], ["1.0"]),
+            ("Maven", "[1.0]", [], ["1.0"]),
+            ("Maven", ["[,1.0)", "[2.0,2.5)"],
+             [[{I: "0"}, {F: "1.0"}], [{I: "2.0"}, {F: "2.5"}]], ["1.0"]),
+            ("Maven", "[,1.0),[2.0,2.5)",
+             [[{I: "0"}, {F: "1.0"}], [{I: "2.0"}, {F: "2.5"}]], ["1.0"]),
+            ("PyPI", "<2.6.1", [[{I: "0"}, {F: "2.6.1"}]], ["1.0"]),
+            ("PyPI", "[,2.6.1)", [[{I: "0"}, {F: "2.6.1"}]], ["1.0"]),
+            ("npm", "<2.6.1 >=2.0.0", [[{I: "2.0.0"}, {F: "2.6.1"}]], ["1.0"]),
+            ("npm", ">=1.0.0 <1.2.3 || >=2.0.0 <2.1.0",
+             [[{I: "1.0.0"}, {F: "1.2.3"}], [{I: "2.0.0"}, {F: "2.1.0"}]], ["1.0"]),
+            ("npm", "<=1.5.0", [[{I: "0"}, {L: "1.5.0"}]], ["1.0"]),
+            ("npm", ">1.0.0", [[{I: "1.0.0"}]], ["1.0"]),
+            ("npm", "=1.4.0", [], ["1.0", "1.4.0"]),
+        ]
+        for eco, spec, expected, versions in table:
+            with self.subTest(eco=eco, spec=spec):
+                ranges, vers = self.parse(eco, spec)
+                self.assertEqual(events(*ranges), expected)
+                self.assertEqual(vers, versions)
+
+    def test_unparseable_falls_back_to_fixed_in(self):
+        for spec in (None, "", "*", "1.x", "!=1.0", "garbage here", [3]):
+            with self.subTest(spec=spec):
+                ranges, vers = self.parse("npm", spec, "1.0.0", ["0.9.0", "1.2.0", "1.1.0"])
+                self.assertEqual(events(*ranges), [[{"introduced": "1.0.0"}, {"fixed": "1.1.0"}]])
+                self.assertEqual(vers, ["1.0.0"])
+        ranges, _ = self.parse("npm", None, "1.0.0", [])
+        self.assertEqual(events(*ranges), [[{"introduced": "1.0.0"}]])
+
+
+class SnykMerge(unittest.TestCase):
+    def load(self, sub="ok", entries=SNYK_ENTRIES):
+        return scan.load_snyk(os.path.join(SNYK_DIR, sub), entries)
+
+    def test_conversion(self):
+        _, vulns = self.load()
+        rec = vulns[ASM]
+        self.assertEqual(rec["aliases"], ["CVE-2099-0001"])
+        self.assertEqual(rec["summary"], "Demo issue in asm")
+        self.assertEqual(rec["severity"][0]["type"], "CVSS_V3")
+        self.assertEqual(rec["database_specific"], {"severity": "HIGH"})
+        self.assertEqual(rec["affected"][0]["package"],
+                         {"ecosystem": "Maven", "name": "org.ow2.asm:asm"})
+        self.assertEqual(events(*rec["affected"][0]["ranges"]),
+                         [[{"introduced": "0"}, {"fixed": "9.11"}]])
+        self.assertEqual(scan.fix_for(rec, "Maven", "org.ow2.asm:asm", "9.7.1"), (True, "9.11"))
+        # no CVSS vector: label from the Snyk severity only
+        self.assertNotIn("severity", vulns[JSMART])
+        self.assertEqual(scan.vuln_severity(vulns[JSMART]), (None, "Medium"))
+        self.assertEqual(scan.vuln_severity(rec)[1], "Critical")
+        self.assertEqual(scan.vuln_severity(vulns["SNYK-JS-DEMOPKG-1"]), (None, "Low"))
+
+    def test_ecosystems_mapped(self):
+        hits, vulns = self.load()
+        self.assertEqual(hits[("PyPI", "demo-lib", "1.0.0")], ["SNYK-PYTHON-DEMOLIB-1"])
+        self.assertEqual(hits[("npm", "demo-pkg", "1.0.0")], ["SNYK-JS-DEMOPKG-1"])
+        # poetry file, pip per-vulnerability packageManager, name normalised
+        self.assertEqual(vulns["SNYK-PYTHON-DEMOLIB-1"]["affected"][0]["package"],
+                         {"ecosystem": "PyPI", "name": "Demo_Lib"})
+        self.assertEqual(scan.fix_for(vulns["SNYK-JS-DEMOPKG-1"], "npm", "demo-pkg", "1.0.0"),
+                         (True, "1.0.5"))
+        self.assertFalse(scan.fix_for(vulns["SNYK-JS-DEMOPKG-1"], "npm", "demo-pkg", "1.0.5")[0])
+
+    def test_transitive_ignored(self):
+        hits, vulns = self.load()
+        self.assertNotIn("SNYK-JAVA-COMEXAMPLE-1", vulns)
+        self.assertEqual(set(hits), set(SNYK_ENTRIES))
+
+    def test_duplicates_deduped(self):
+        hits, vulns = self.load()
+        self.assertEqual(hits[("Maven", "org.ow2.asm:asm", "9.7.1")], [ASM])
+        self.assertEqual(len([i for i in vulns if i == ASM]), 1)
+        self.assertEqual(len(vulns[ASM]["affected"]), 1)
+
+    def test_same_id_merges_versions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, ver in (("a.json", "9.7.1"), ("b.json", "9.5.0")):
+                with open(os.path.join(tmp, name), "w") as f:
+                    json.dump({"ok": False, "packageManager": "maven", "vulnerabilities": [
+                        {"id": ASM, "title": "t", "packageName": "org.ow2.asm:asm",
+                         "version": ver, "severity": "high",
+                         "identifiers": {"CVE": ["CVE-2099-0001"]},
+                         "semver": {"vulnerable": ["[,9.11)"]}, "fixedIn": ["9.11"]}]}, f)
+            entries = [("Maven", "org.ow2.asm:asm", "9.7.1"), ("Maven", "org.ow2.asm:asm", "9.5.0")]
+            hits, vulns = scan.load_snyk(tmp, entries)
+        self.assertEqual(sorted(vulns[ASM]["affected"][0]["versions"]),
+                         ["9.5.0", "9.7.1"])
+        self.assertEqual(len(vulns[ASM]["affected"][0]["ranges"]), 1)
+        self.assertEqual(sorted(hits), sorted(entries))
+
+    def test_list_of_documents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            doc = {"ok": True, "packageManager": "npm", "vulnerabilities": []}
+            with open(os.path.join(tmp, "x.json"), "w") as f:
+                json.dump([doc, doc], f)
+            self.assertEqual(scan.load_snyk(tmp, SNYK_ENTRIES), ({}, {}))
+
+    def test_bad_input_raises(self):
+        with self.assertRaisesRegex(ValueError, "Authentication failed"):
+            self.load("error")
+        bad = {"x": "[1]", "y": '"text"', "z": "{trunc", "w": '{"ok": true}',
+               "v": '[{"vulnerabilities": []}, 3]',
+               "u": '{"packageManager": "gem", "vulnerabilities": [{"id": "S", '
+                    '"packageName": "a", "version": "1"}]}',
+               "t": '{"packageManager": "npm", "vulnerabilities": [{"id": "S"}]}'}
+        for key, text in bad.items():
+            with self.subTest(key), tempfile.TemporaryDirectory() as tmp:
+                with open(os.path.join(tmp, "a.json"), "w") as f:
+                    f.write(text)
+                with self.assertRaises(ValueError):
+                    scan.load_snyk(tmp, SNYK_ENTRIES)
+
+    def test_missing_or_empty_directory_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(FileNotFoundError):
+                scan.load_snyk(os.path.join(tmp, "nope"), SNYK_ENTRIES)
+            with self.assertRaises(ValueError):
+                scan.load_snyk(tmp, SNYK_ENTRIES)
+
+    def offline(self, tmp, vulns=(), by_purl=None):
+        off = os.path.join(tmp, "osv")
+        os.makedirs(os.path.join(off, "vulns"))
+        for v in vulns:
+            with open(os.path.join(off, "vulns", v["id"] + ".json"), "w") as f:
+                json.dump(v, f)
+        with open(os.path.join(off, "querybatch.json"), "w") as f:
+            json.dump(by_purl or {}, f)
+        return off
+
+    def snyk_dir(self, name):
+        return os.path.join(SNYK_DIR, name)
+
+    def test_snyk_only_finding(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            findings, no_fix = scan.scan(SNYK_ENTRIES, self.offline(tmp),
+                                         os.path.join(SNYK_DIR, "ok"))
+        by_pkg = {f["package"]: f for f in findings}
+        self.assertEqual(by_pkg["org.ow2.asm:asm"]["request"], "9.11")
+        self.assertEqual(by_pkg["org.ow2.asm:asm"]["advisories"], ["CVE-2099-0001", ASM])
+        self.assertEqual(by_pkg["org.ow2.asm:asm"]["severity"], "Critical")
+        self.assertEqual(by_pkg["net.minidev:json-smart"]["request"], "2.6.1")
+        self.assertEqual(by_pkg["demo-lib"]["request"], "1.2.0")
+        self.assertEqual(by_pkg["demo-pkg"]["request"], "1.0.5")
+        self.assertEqual(by_pkg["demo-pkg"]["in_use"], ["1.0.0"])
+        self.assertEqual(no_fix, [])
+
+    def test_alias_merge_with_osv(self):
+        osv = vuln("GHSA-aaaa-bbbb-cccc", [rng(("introduced", "0"), ("fixed", "9.10"))],
+                   aliases=["CVE-2099-0001"], eco="Maven", name="org.ow2.asm:asm")
+        purl = "pkg:maven/org.ow2.asm/asm@9.7.1"
+        with tempfile.TemporaryDirectory() as tmp:
+            off = self.offline(tmp, [osv], {purl: ["GHSA-aaaa-bbbb-cccc"]})
+            findings, _ = scan.scan(SNYK_ENTRIES, off, os.path.join(SNYK_DIR, "ok"))
+        asm = next(f for f in findings if f["package"] == "org.ow2.asm:asm")
+        self.assertEqual(asm["advisories"], ["CVE-2099-0001", "GHSA-aaaa-bbbb-cccc", ASM])
+        self.assertEqual(asm["request"], "9.11")  # highest fix of the group
+
+    def test_osv_record_wins_on_id_collision(self):
+        osv = vuln(ASM, [rng(("introduced", "0"), ("fixed", "9.20"))],
+                   eco="Maven", name="org.ow2.asm:asm")
+        with tempfile.TemporaryDirectory() as tmp:
+            off = self.offline(tmp, [osv], {"pkg:maven/org.ow2.asm/asm@9.7.1": [ASM]})
+            findings, _ = scan.scan(SNYK_ENTRIES, off, os.path.join(SNYK_DIR, "ok"))
+        asm = next(f for f in findings if f["package"] == "org.ow2.asm:asm")
+        self.assertEqual(asm["request"], "9.20")
+        self.assertEqual(asm["advisories"], [ASM])
+
+    def test_main_report_sources_and_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = os.path.join(tmp, "root")
+            for rel, text in {"python/requirements.txt": "demo-lib==1.0.0\n",
+                              "java/dependencies.txt": "org.ow2.asm:asm:9.7.1\n",
+                              "npm/packages.txt": "demo-pkg@1.0.0\n"}.items():
+                os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+                with open(os.path.join(root, rel), "w") as f:
+                    f.write(text)
+            off = self.offline(tmp)
+            out = os.path.join(tmp, "out")
+            args = ["--root", root, "--out", out, "--offline-vulns", off]
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(scan.main(args), 0)
+                with open(os.path.join(out, "report.json")) as f:
+                    self.assertEqual(json.load(f)["sources"], ["OSV"])
+                self.assertEqual(scan.main(args + ["--snyk", os.path.join(SNYK_DIR, "ok")]), 0)
+            with open(os.path.join(out, "report.json")) as f:
+                report = json.load(f)
+            with open(os.path.join(out, "report.md")) as f:
+                md = f.read()
+            self.assertEqual(report["sources"], ["OSV", "Snyk"])
+            self.assertIn("from OSV + Snyk", md.splitlines()[2])
+            self.assertIn(ASM, md)
+            self.assertIn("org.ow2.asm:asm:9.11", md)
+            self.assertEqual(report["counts"]["findings"], 3)
+            # a previous report without "sources" still diffs
+            prev = os.path.join(tmp, "prev.json")
+            with open(prev, "w") as f:
+                json.dump({"findings": [{"ecosystem": "npm", "package": "demo-pkg"}]}, f)
+            with contextlib.redirect_stdout(io.StringIO()):
+                scan.main(args + ["--previous", prev, "--snyk", os.path.join(SNYK_DIR, "ok")])
+            with open(os.path.join(out, "report.json")) as f:
+                statuses = {x["package"]: x["status"] for x in json.load(f)["findings"]}
+            self.assertEqual(statuses["demo-pkg"], "open")
+            with self.assertRaises(ValueError):
+                scan.main(args + ["--snyk", os.path.join(SNYK_DIR, "error")])
+            with self.assertRaises(FileNotFoundError):
+                scan.main(args + ["--snyk", os.path.join(tmp, "missing")])
 
 
 class EndToEnd(unittest.TestCase):

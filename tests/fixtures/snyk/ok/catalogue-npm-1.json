@@ -1,0 +1,40 @@
+{
+  "ok": false,
+  "dependencyCount": 10,
+  "org": "demo-org",
+  "projectName": "catalogue-npm-1",
+  "displayTargetFile": "manifest",
+  "path": "/work/demo",
+  "packageManager": "npm",
+  "vulnerabilities": [
+    {
+      "id": "SNYK-JS-DEMOPKG-1",
+      "title": "Demo issue in demo-pkg",
+      "packageName": "demo-pkg",
+      "version": "1.0.0",
+      "severity": "low",
+      "cvssScore": 7.5,
+      "identifiers": {
+        "CVE": [],
+        "GHSA": [],
+        "CWE": [
+          "CWE-400"
+        ]
+      },
+      "semver": {
+        "vulnerable": [
+          "<1.0.5 >=1.0.0 || >=2.0.0 <2.0.2"
+        ]
+      },
+      "fixedIn": [
+        "1.0.5",
+        "2.0.2"
+      ],
+      "from": [
+        "catalogue-npm-1@1.0.0",
+        "demo-pkg@1.0.0"
+      ],
+      "packageManager": "npm"
+    }
+  ]
+}
