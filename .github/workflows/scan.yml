@@ -8,7 +8,7 @@ name: Scan
 
 on:
   schedule:
-    - cron: "0 0 * * 1-5"   # 00:00 UTC, Monday to Friday
+    - cron: "0 18 * * 0-4"   # 18:00 UTC Sun-Thu = 02:00 UTC+8 Mon-Fri
   workflow_dispatch:
 
 permissions:
